@@ -12,3 +12,8 @@ build/
 local.properties
 **/GeneratedPluginRegistrant.java
 .DS_Store
+android/.gradle/
+android/.kotlin/
+android/app/debug/
+android/app/profile/
+android/app/release/
