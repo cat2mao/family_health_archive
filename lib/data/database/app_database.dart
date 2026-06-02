@@ -24,13 +24,17 @@ class AppDatabase {
     final path = p.join(dir.path, 'family_health_archive.sqlite');
     return openDatabase(
       path,
-      version: 2,
+      version: 3,
       onCreate: (db, version) async {
         await _createAllTables(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) {
           await _createV2Tables(db);
+        }
+        if (oldVersion < 3) {
+          // Add treatment column to medical_records
+          await db.execute('ALTER TABLE medical_records ADD COLUMN treatment TEXT');
         }
       },
     );
@@ -72,6 +76,7 @@ class AppDatabase {
         hospital_days INTEGER,
         focus_on TEXT,
         result TEXT,
+        treatment TEXT,
         notes TEXT,
         cost REAL,
         created_at INTEGER NOT NULL,
@@ -688,6 +693,7 @@ class MedicalRecordRow {
     this.hospitalDays,
     this.focusOn,
     this.result,
+    this.treatment,
     this.notes,
     this.cost,
     required this.createdAt,
@@ -707,6 +713,7 @@ class MedicalRecordRow {
   final int? hospitalDays;
   final String? focusOn;
   final String? result;
+  final String? treatment;
   final String? notes;
   final double? cost;
   final DateTime createdAt;
@@ -728,6 +735,7 @@ class MedicalRecordRow {
         'hospital_days': hospitalDays,
         'focus_on': focusOn,
         'result': result,
+        'treatment': treatment,
         'notes': notes,
         'cost': cost,
         'created_at': createdAt.millisecondsSinceEpoch,
@@ -752,6 +760,7 @@ class MedicalRecordRow {
         hospitalDays: map['hospital_days'] as int?,
         focusOn: map['focus_on'] as String?,
         result: map['result'] as String?,
+        treatment: map['treatment'] as String?,
         notes: map['notes'] as String?,
         cost: map['cost'] as double?,
         createdAt: DateTime.fromMillisecondsSinceEpoch(map['created_at']! as int),

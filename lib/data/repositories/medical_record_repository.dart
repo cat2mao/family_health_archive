@@ -29,6 +29,7 @@ class MedicalRecordRepository {
     int? hospitalDays,
     String? focusOn,
     String? result,
+    String? treatment,
     String? notes,
     double? cost,
   }) async {
@@ -47,6 +48,7 @@ class MedicalRecordRepository {
       hospitalDays: hospitalDays,
       focusOn: focusOn,
       result: result,
+      treatment: treatment,
       notes: notes,
       cost: cost,
       createdAt: DateTime.now(),

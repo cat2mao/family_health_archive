@@ -1,0 +1,21 @@
+// Force all build operations to use Chinese mirrors
+// beforeSettings runs before any settings.gradle, including Flutter's included builds
+beforeSettings { settings ->
+    settings.pluginManagement {
+        repositories {
+            maven { url 'https://maven.aliyun.com/repository/google' }
+            maven { url 'https://maven.aliyun.com/repository/central' }
+            maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
+        }
+    }
+}
+
+allprojects {
+    buildscript {
+        repositories {
+            maven { url 'https://maven.aliyun.com/repository/google' }
+            maven { url 'https://maven.aliyun.com/repository/central' }
+            maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
+        }
+    }
+}

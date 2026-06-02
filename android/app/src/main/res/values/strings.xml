@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="widget_description">显示待办健康提醒，点击打开应用</string>
+    <string name="widget_name">健康提醒</string>
+</resources>

@@ -68,4 +68,11 @@ class ReminderRepository {
   }
 
   Future<void> delete(String id) => _db.deleteReminder(id);
+
+  /// Delete multiple reminders by their IDs
+  Future<void> deleteMultiple(List<String> ids) async {
+    for (final id in ids) {
+      await _db.deleteReminder(id);
+    }
+  }
 }

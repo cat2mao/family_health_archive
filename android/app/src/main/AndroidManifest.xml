@@ -7,6 +7,8 @@
     <uses-permission android:name="android.permission.USE_EXACT_ALARM"/>
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
     <uses-permission android:name="android.permission.VIBRATE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+
     <application
         android:label="家庭健康档案"
         android:name="${applicationName}"
@@ -31,5 +33,25 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2"/>
+
+        <!-- Xiaomi Desktop Widget -->
+        <receiver
+            android:name=".widget.ReminderWidgetProvider"
+            android:exported="true"
+            android:label="健康提醒">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE"/>
+                <action android:name="com.familyhealth.archive.REFRESH_WIDGET"/>
+                <action android:name="com.familyhealth.archive.UPDATE_WIDGET"/>
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/reminder_widget_info"/>
+        </receiver>
+
+        <service
+            android:name=".widget.ReminderWidgetService"
+            android:permission="android.permission.BIND_REMOTEVIEWS"
+            android:exported="false" />
     </application>
 </manifest>

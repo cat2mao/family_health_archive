@@ -10,7 +10,10 @@ import 'package:intl/intl.dart';
 import '../../core/enums.dart';
 import '../../data/database/app_database.dart';
 import '../../providers/app_providers.dart';
+import '../../services/ai_ocr_service.dart';
 import '../../services/image_compress_service.dart';
+import '../../services/ocr_service.dart';
+import '../../widgets/fullscreen_image_viewer.dart';
 import '../../widgets/person_avatar.dart';
 
 class RecordEditScreen extends ConsumerStatefulWidget {
@@ -35,9 +38,14 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
   final _doctorController = TextEditingController();
   final _focusOnController = TextEditingController();
   final _resultController = TextEditingController();
+  final _treatmentController = TextEditingController();
   final _notesController = TextEditingController();
   final _costController = TextEditingController();
   final _hospitalDaysController = TextEditingController();
+  final _medicineController = TextEditingController();
+
+  // Track individual invoice costs for breakdown display
+  final List<double> _invoiceCosts = [];
 
   VisitType _visitType = VisitType.outpatient;
   DateTime _visitTime = DateTime.now();
@@ -51,12 +59,17 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
   // Attachments - grouped by type
   final Map<AttachmentType, List<_AttachmentDraft>> _attachmentDrafts = {};
 
+  // OCR state
+  bool _ocrProcessing = false;
+  int _ocrProcessingCount = 0; // Track how many OCR tasks are running
+
   // Existing attachments (for edit mode)
   List<AttachmentRow> _existingAttachments = [];
 
   bool _loading = true;
   bool _saving = false;
   MedicalRecordRow? _existing;
+  bool _hasChanges = false;
 
   bool get _isEdit => widget.recordId != null;
 
@@ -86,6 +99,7 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
         _doctorController.text = row.doctorName ?? '';
         _focusOnController.text = row.focusOn ?? '';
         _resultController.text = row.result ?? '';
+        _treatmentController.text = row.treatment ?? '';
         _notesController.text = row.notes ?? '';
         _costController.text = row.cost?.toString() ?? '';
         _admissionDate = row.admissionDate;
@@ -114,9 +128,11 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
     _doctorController.dispose();
     _focusOnController.dispose();
     _resultController.dispose();
+    _treatmentController.dispose();
     _notesController.dispose();
     _costController.dispose();
     _hospitalDaysController.dispose();
+    _medicineController.dispose();
     super.dispose();
   }
 
@@ -137,6 +153,7 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
     if (time == null) return;
     setState(() {
       _visitTime = DateTime(date.year, date.month, date.day, time.hour, time.minute);
+      _markChanged();
     });
   }
 
@@ -159,9 +176,11 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
       if (_admissionDate != null && _dischargeDate != null) {
         _hospitalDaysController.text = _dischargeDate!.difference(_admissionDate!).inDays.toString();
       }
+      _markChanged();
     });
   }
 
+  /// Add image attachment and auto-OCR it
   Future<void> _addImageAttachment(AttachmentType type, ImageSource source) async {
     final picker = ImagePicker();
     final file = await picker.pickImage(source: source);
@@ -179,7 +198,11 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
         thumbnailPath: thumb,
         fileType: FileType.image,
       ));
+      _markChanged();
     });
+
+    // Auto-OCR the uploaded image (only for image files, not PDFs)
+    _autoOcrOnImage(compressed.path);
   }
 
   Future<void> _addPdfAttachment(AttachmentType type) async {
@@ -197,12 +220,144 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
         filePath: path,
         fileType: FileType.pdf,
       ));
+      _markChanged();
     });
+    // PDF files are not OCR'd (only local image OCR for privacy)
+  }
+
+  /// Automatically run OCR on uploaded image and offer to fill form fields
+  Future<void> _autoOcrOnImage(String imagePath) async {
+    setState(() {
+      _ocrProcessing = true;
+      _ocrProcessingCount++;
+    });
+
+    try {
+      var data = await OcrService.recognizeFromFile(imagePath);
+
+      // Try AI enhancement if enabled
+      if (data.rawText != null && data.rawText!.isNotEmpty) {
+        try {
+          final aiData = await AiOcrService.analyzeWithAi(data.rawText!);
+          if (aiData != null) {
+            data = aiData;
+          }
+        } catch (e) {
+          debugPrint('AI enhancement failed, using local OCR: $e');
+        }
+      }
+
+      if (!mounted || !data.hasAnyData) return;
+
+      // Show editable OCR result sheet and get edited data
+      // Task 5: Disable swipe-to-dismiss to prevent accidental dismissal
+      final editedData = await showModalBottomSheet<OcrExtractedData>(
+        context: context,
+        isScrollControlled: true,
+        isDismissible: false,
+        enableDrag: false,
+        builder: (ctx) => _OcrResultSheet(data: data),
+      );
+
+      if (editedData != null && mounted) {
+        setState(() {
+          // Task 1 & 2: Append logic - if field already has content, append new content after it
+          // For fields that should be appended (symptoms, diagnosis, treatment, result, medicine)
+          if (editedData.hospital != null) {
+            if (_hospitalController.text.trim().isEmpty) {
+              _hospitalController.text = editedData.hospital!;
+            }
+            // Hospital doesn't append - keep existing
+          }
+          if (editedData.diagnosis != null) {
+            final existing = _diagnosisController.text.trim();
+            if (existing.isEmpty) {
+              _diagnosisController.text = editedData.diagnosis!;
+            } else if (!existing.contains(editedData.diagnosis!)) {
+              // Append new diagnosis
+              _diagnosisController.text = '$existing; ${editedData.diagnosis!}';
+            }
+          }
+          if (editedData.doctorName != null && _doctorController.text.trim().isEmpty) {
+            _doctorController.text = editedData.doctorName!;
+          }
+          if (editedData.symptoms != null) {
+            final existing = _symptomsController.text.trim();
+            if (existing.isEmpty) {
+              _symptomsController.text = editedData.symptoms!;
+            } else if (!existing.contains(editedData.symptoms!)) {
+              // Append new symptoms
+              _symptomsController.text = '$existing\n${editedData.symptoms!}';
+            }
+          }
+          if (editedData.cost != null) {
+            // Task 3: Track individual invoice costs and accumulate total
+            final newCost = double.tryParse(editedData.cost!);
+            if (newCost != null) {
+              _invoiceCosts.add(newCost); // Track individual invoice cost
+              final existingCost = double.tryParse(_costController.text.trim());
+              if (existingCost != null) {
+                _costController.text = (existingCost + newCost).toStringAsFixed(2);
+              } else {
+                _costController.text = editedData.cost!;
+              }
+            }
+          }
+          if (editedData.result != null) {
+            final existing = _resultController.text.trim();
+            if (existing.isEmpty) {
+              _resultController.text = editedData.result!;
+            } else if (!existing.contains(editedData.result!)) {
+              // Append new result
+              _resultController.text = '$existing; ${editedData.result!}';
+            }
+          }
+          if (editedData.treatment != null) {
+            final existing = _treatmentController.text.trim();
+            if (existing.isEmpty) {
+              _treatmentController.text = editedData.treatment!;
+            } else if (!existing.contains(editedData.treatment!)) {
+              // Append new treatment
+              _treatmentController.text = '$existing; ${editedData.treatment!}';
+            }
+          }
+          if (editedData.medicineName != null) {
+            final existing = _medicineController.text.trim();
+            if (existing.isEmpty) {
+              _medicineController.text = editedData.medicineName!;
+            } else if (!existing.contains(editedData.medicineName!)) {
+              // Append new medicine
+              _medicineController.text = '$existing; ${editedData.medicineName!}';
+            }
+          }
+        });
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('已自动填入识别信息')),
+          );
+        }
+      }
+    } catch (e) {
+      debugPrint('Auto OCR failed: $e');
+      // Silently fail - don't bother user if auto-OCR fails
+    } finally {
+      if (mounted) {
+        setState(() {
+          _ocrProcessingCount--;
+          if (_ocrProcessingCount <= 0) {
+            _ocrProcessing = false;
+            _ocrProcessingCount = 0;
+          }
+        });
+      }
+    }
   }
 
   void _removeDraft(AttachmentType type, int index) {
     setState(() {
       _attachmentDrafts[type]!.removeAt(index);
+      _markChanged();
     });
   }
 
@@ -246,10 +401,8 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
     }
   }
 
-  bool _hasPrescriptionAttachments() {
-    final newDrafts = _attachmentDrafts[AttachmentType.prescription] ?? [];
-    final existingPrescriptions = _existingAttachments.where((a) => a.type == AttachmentType.prescription.code);
-    return newDrafts.isNotEmpty || existingPrescriptions.isNotEmpty;
+  void _markChanged() {
+    if (!_hasChanges) setState(() => _hasChanges = true);
   }
 
   Future<void> _save() async {
@@ -284,6 +437,7 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
           hospitalDays: _hospitalDaysController.text.trim().isEmpty ? null : int.tryParse(_hospitalDaysController.text.trim()),
           focusOn: _focusOnController.text.trim().isEmpty ? null : _focusOnController.text.trim(),
           result: _resultController.text.trim().isEmpty ? null : _resultController.text.trim(),
+          treatment: _treatmentController.text.trim().isEmpty ? null : _treatmentController.text.trim(),
           notes: _notesController.text.trim().isEmpty ? null : _notesController.text.trim(),
           cost: cost,
           createdAt: _existing!.createdAt,
@@ -304,6 +458,7 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
           hospitalDays: _hospitalDaysController.text.trim().isEmpty ? null : int.tryParse(_hospitalDaysController.text.trim()),
           focusOn: _focusOnController.text.trim().isEmpty ? null : _focusOnController.text.trim(),
           result: _resultController.text.trim().isEmpty ? null : _resultController.text.trim(),
+          treatment: _treatmentController.text.trim().isEmpty ? null : _treatmentController.text.trim(),
           notes: _notesController.text.trim().isEmpty ? null : _notesController.text.trim(),
           cost: cost,
         );
@@ -325,28 +480,6 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
         }
       }
 
-      // Prompt for medication reminder if prescription attached
-      if (_hasPrescriptionAttachments() && mounted) {
-        final createReminder = await showDialog<bool>(
-          context: context,
-          builder: (ctx) => AlertDialog(
-            title: const Text('添加用药提醒？'),
-            content: const Text('检测到已上传处方附件，是否为本次就诊添加用药提醒？'),
-            actions: [
-              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('暂不')),
-              FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('添加')),
-            ],
-          ),
-        );
-
-        if (createReminder == true && mounted) {
-          ref.invalidate(recordsForSelectedPersonProvider);
-          ref.invalidate(allRecordsProvider);
-          context.push('/reminder/edit?personId=$_selectedPersonId&recordId=${record.id}');
-          return;
-        }
-      }
-
       ref.invalidate(recordsForSelectedPersonProvider);
       ref.invalidate(allRecordsProvider);
       if (mounted) context.pop();
@@ -362,15 +495,47 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
     }
 
     final theme = Theme.of(context);
-    final isHuman = true; // Simplified; could check person type
     final showOutpatientFields = _visitType == VisitType.outpatient || _visitType == VisitType.emergency;
     final showInpatientFields = _visitType == VisitType.inpatient;
     final showSimpleFields = _visitType == VisitType.checkup || _visitType == VisitType.vaccination;
 
-    return Scaffold(
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) async {
+        if (didPop) return;
+        if (!_hasChanges) {
+          Navigator.of(context).pop();
+          return;
+        }
+        final shouldLeave = await _confirmLeave();
+        if (shouldLeave == true && context.mounted) {
+          Navigator.of(context).pop();
+        }
+      },
+      child: Scaffold(
       appBar: AppBar(
+        automaticallyImplyLeading: false,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () async {
+            if (!_hasChanges) {
+              Navigator.of(context).pop();
+              return;
+            }
+            final shouldLeave = await _confirmLeave();
+            if (shouldLeave == true && context.mounted) {
+              Navigator.of(context).pop();
+            }
+          },
+        ),
         title: Text(_isEdit ? '编辑就诊记录' : '添加就诊记录'),
         actions: [
+          // Show OCR processing indicator
+          if (_ocrProcessing)
+            const Padding(
+              padding: EdgeInsets.all(12),
+              child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)),
+            ),
           TextButton(
             onPressed: _saving ? null : _save,
             child: _saving
@@ -388,20 +553,23 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
             _buildPersonSelector(context),
             const SizedBox(height: 16),
 
-            // Visit type
-            Text('就诊类型', style: theme.textTheme.titleSmall),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              runSpacing: 4,
-              children: VisitType.values.map((vt) {
-                final selected = _visitType == vt;
-                return ChoiceChip(
-                  label: Text(vt.label),
-                  selected: selected,
-                  onSelected: (_) => setState(() => _visitType = vt),
+            // Visit type dropdown
+            DropdownButtonFormField<VisitType>(
+              value: _visitType,
+              decoration: const InputDecoration(
+                labelText: '就诊类型',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.local_hospital_outlined),
+              ),
+              items: VisitType.values.map((vt) {
+                return DropdownMenuItem<VisitType>(
+                  value: vt,
+                  child: Text(vt.label),
                 );
               }).toList(),
+              onChanged: (value) {
+                if (value != null) setState(() { _visitType = value; _markChanged(); });
+              },
             ),
             const SizedBox(height: 16),
 
@@ -423,14 +591,15 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
             _buildHospitalField(),
             const SizedBox(height: 12),
 
-            // Location
+            // Department
             TextFormField(
               controller: _locationController,
               decoration: const InputDecoration(
-                labelText: '地点',
+                labelText: '就诊科室',
                 border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.location_on_outlined),
+                prefixIcon: Icon(Icons.meeting_room_outlined),
               ),
+              onChanged: (_) => _markChanged(),
             ),
             const SizedBox(height: 12),
 
@@ -439,22 +608,40 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
             if (showInpatientFields) ..._buildInpatientFields(),
             if (showSimpleFields) ..._buildSimpleFields(),
 
-            // Cost
-            TextFormField(
-              controller: _costController,
-              decoration: const InputDecoration(
-                labelText: '花费金额（可选）',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.payments_outlined),
-                prefixText: '¥ ',
-              ),
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          // Treatment
+          TextFormField(
+            controller: _treatmentController,
+            decoration: const InputDecoration(
+              labelText: '处置',
+              border: OutlineInputBorder(),
+              prefixIcon: Icon(Icons.healing_outlined),
             ),
-            const SizedBox(height: 12),
+            maxLines: 2,
+            onChanged: (_) => _markChanged(),
+          ),
+          const SizedBox(height: 12),
+
+          // Medicine (prescription)
+          TextFormField(
+            controller: _medicineController,
+            decoration: const InputDecoration(
+              labelText: '药品（可选）',
+              border: OutlineInputBorder(),
+              prefixIcon: Icon(Icons.medication_outlined),
+            ),
+            maxLines: 2,
+            onChanged: (_) => _markChanged(),
+          ),
+          const SizedBox(height: 12),
+
+          // Cost with breakdown
+          _buildCostSection(theme),
+          const SizedBox(height: 12),
 
             // Notes
             TextFormField(
               controller: _notesController,
+              onChanged: (_) => _markChanged(),
               decoration: const InputDecoration(
                 labelText: '备注',
                 border: OutlineInputBorder(),
@@ -484,6 +671,24 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
             const SizedBox(height: 32),
           ],
         ),
+      ),
+      ),
+    );
+  }
+
+  Future<bool?> _confirmLeave() async {
+    return showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('确认离开'),
+        content: const Text('当前填写的信息尚未保存，确定要离开吗？'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('离开')),
+          FilledButton(onPressed: () async {
+            await _save();
+            if (ctx.mounted) Navigator.pop(ctx, true);
+          }, child: const Text('保存')),
+        ],
       ),
     );
   }
@@ -605,6 +810,7 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
           prefixIcon: Icon(Icons.sick_outlined),
         ),
         maxLines: 2,
+        onChanged: (_) => _markChanged(),
       ),
       const SizedBox(height: 12),
       TextFormField(
@@ -614,6 +820,7 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
           border: OutlineInputBorder(),
           prefixIcon: Icon(Icons.medical_services_outlined),
         ),
+        onChanged: (_) => _markChanged(),
       ),
       const SizedBox(height: 12),
       TextFormField(
@@ -623,6 +830,7 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
           border: OutlineInputBorder(),
           prefixIcon: Icon(Icons.person_outlined),
         ),
+        onChanged: (_) => _markChanged(),
       ),
       const SizedBox(height: 12),
     ];
@@ -670,6 +878,7 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
           prefixIcon: Icon(Icons.calendar_month_outlined),
         ),
         keyboardType: TextInputType.number,
+        onChanged: (_) => _markChanged(),
       ),
       const SizedBox(height: 12),
       TextFormField(
@@ -679,6 +888,7 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
           border: OutlineInputBorder(),
           prefixIcon: Icon(Icons.medical_services_outlined),
         ),
+        onChanged: (_) => _markChanged(),
       ),
       const SizedBox(height: 12),
       TextFormField(
@@ -688,6 +898,7 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
           border: OutlineInputBorder(),
           prefixIcon: Icon(Icons.person_outlined),
         ),
+        onChanged: (_) => _markChanged(),
       ),
       const SizedBox(height: 12),
     ];
@@ -703,6 +914,7 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
           border: const OutlineInputBorder(),
           prefixIcon: Icon(isVaccine ? Icons.vaccines_outlined : Icons.info_outline),
         ),
+        onChanged: (_) => _markChanged(),
       ),
       const SizedBox(height: 12),
       TextFormField(
@@ -713,6 +925,7 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
           prefixIcon: Icon(Icons.summarize_outlined),
         ),
         maxLines: 2,
+        onChanged: (_) => _markChanged(),
       ),
       const SizedBox(height: 12),
       TextFormField(
@@ -722,9 +935,97 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
           border: OutlineInputBorder(),
           prefixIcon: Icon(Icons.person_outlined),
         ),
+        onChanged: (_) => _markChanged(),
       ),
       const SizedBox(height: 12),
     ];
+  }
+
+  /// Build cost section with total and per-invoice breakdown
+  Widget _buildCostSection(ThemeData theme) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        TextFormField(
+          controller: _costController,
+          decoration: const InputDecoration(
+            labelText: '花费金额（总金额）',
+            border: OutlineInputBorder(),
+            prefixIcon: Icon(Icons.payments_outlined),
+            prefixText: '¥ ',
+          ),
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          onChanged: (_) => _markChanged(),
+        ),
+        // Show per-invoice cost breakdown if there are multiple invoice costs
+        if (_invoiceCosts.length > 1) ...[
+          const SizedBox(height: 8),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.receipt_long, size: 16, color: theme.colorScheme.outline),
+                    const SizedBox(width: 8),
+                    Text(
+                      '发票明细',
+                      style: theme.textTheme.labelMedium?.copyWith(
+                        color: theme.colorScheme.outline,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                ...List.generate(_invoiceCosts.length, (i) {
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 4),
+                    child: Row(
+                      children: [
+                        Text(
+                          '发票 ${i + 1}:',
+                          style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline),
+                        ),
+                        const Spacer(),
+                        Text(
+                          '¥${_invoiceCosts[i].toStringAsFixed(2)}',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }),
+                const Divider(height: 8),
+                Row(
+                  children: [
+                    Text(
+                      '合计:',
+                      style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+                    ),
+                    const Spacer(),
+                    Text(
+                      '¥${_invoiceCosts.reduce((a, b) => a + b).toStringAsFixed(2)}',
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
+                        color: theme.colorScheme.primary,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ],
+    );
   }
 
   Widget _buildTagSection(BuildContext context) {
@@ -771,7 +1072,25 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('附件', style: theme.textTheme.titleSmall),
+        Row(
+          children: [
+            Text('附件', style: theme.textTheme.titleSmall),
+            if (_ocrProcessing) ...[
+              const SizedBox(width: 8),
+              const SizedBox(
+                width: 14, height: 14,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              const SizedBox(width: 4),
+              Text('正在识别...', style: theme.textTheme.labelSmall?.copyWith(color: theme.colorScheme.primary)),
+            ],
+          ],
+        ),
+        const SizedBox(height: 4),
+        Text(
+          '上传图片将自动识别内容并补全信息',
+          style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline),
+        ),
         const SizedBox(height: 8),
         ...AttachmentType.values.map((type) => _buildAttachmentTypeSection(context, type)),
       ],
@@ -794,13 +1113,13 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
               const Spacer(),
               IconButton(
                 icon: const Icon(Icons.camera_alt, size: 20),
-                tooltip: '拍照',
+                tooltip: '拍照（自动识别）',
                 onPressed: () => _addImageAttachment(type, ImageSource.camera),
                 visualDensity: VisualDensity.compact,
               ),
               IconButton(
                 icon: const Icon(Icons.photo, size: 20),
-                tooltip: '相册',
+                tooltip: '相册（自动识别）',
                 onPressed: () => _addImageAttachment(type, ImageSource.gallery),
                 visualDensity: VisualDensity.compact,
               ),
@@ -840,27 +1159,32 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
     final isPdf = att.attachmentFileType == FileType.pdf;
     return Stack(
       children: [
-        Container(
-          width: 80,
-          height: 80,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: theme.colorScheme.outlineVariant),
+        GestureDetector(
+          onTap: isPdf ? null : () {
+            FullscreenImageViewer.show(context, imagePath: att.filePath);
+          },
+          child: Container(
+            width: 80,
+            height: 80,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: theme.colorScheme.outlineVariant),
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: isPdf
+                ? Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.picture_as_pdf, color: theme.colorScheme.error, size: 32),
+                      Text('PDF', style: theme.textTheme.labelSmall),
+                    ],
+                  )
+                : Image.file(
+                    File(att.thumbnailPath ?? att.filePath),
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => Image.file(File(att.filePath), fit: BoxFit.cover),
+                  ),
           ),
-          clipBehavior: Clip.antiAlias,
-          child: isPdf
-              ? Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.picture_as_pdf, color: theme.colorScheme.error, size: 32),
-                    Text('PDF', style: theme.textTheme.labelSmall),
-                  ],
-                )
-              : Image.file(
-                  File(att.thumbnailPath ?? att.filePath),
-                  fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) => Image.file(File(att.filePath), fit: BoxFit.cover),
-                ),
         ),
         Positioned(
           top: 2,
@@ -886,23 +1210,28 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
     final isPdf = draft.fileType == FileType.pdf;
     return Stack(
       children: [
-        Container(
-          width: 80,
-          height: 80,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: theme.colorScheme.outlineVariant),
+        GestureDetector(
+          onTap: isPdf ? null : () {
+            FullscreenImageViewer.show(context, imagePath: draft.filePath);
+          },
+          child: Container(
+            width: 80,
+            height: 80,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: theme.colorScheme.outlineVariant),
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: isPdf
+                ? Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.picture_as_pdf, color: theme.colorScheme.error, size: 32),
+                      Text('PDF', style: theme.textTheme.labelSmall),
+                    ],
+                  )
+                : Image.file(File(draft.filePath), fit: BoxFit.cover),
           ),
-          clipBehavior: Clip.antiAlias,
-          child: isPdf
-              ? Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.picture_as_pdf, color: theme.colorScheme.error, size: 32),
-                    Text('PDF', style: theme.textTheme.labelSmall),
-                  ],
-                )
-              : Image.file(File(draft.filePath), fit: BoxFit.cover),
         ),
         Positioned(
           top: 2,
@@ -920,6 +1249,256 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// Bottom sheet showing OCR results with option to edit and auto-fill
+class _OcrResultSheet extends StatefulWidget {
+  const _OcrResultSheet({required this.data});
+  final OcrExtractedData data;
+
+  @override
+  State<_OcrResultSheet> createState() => _OcrResultSheetState();
+}
+
+class _OcrResultSheetState extends State<_OcrResultSheet> {
+  late final TextEditingController _hospitalController;
+  late final TextEditingController _diagnosisController;
+  late final TextEditingController _doctorController;
+  late final TextEditingController _symptomsController;
+  late final TextEditingController _costController;
+  late final TextEditingController _resultController;
+  late final TextEditingController _dateController;
+  late final TextEditingController _medicineController;
+
+  @override
+  void initState() {
+    super.initState();
+    _hospitalController = TextEditingController(text: widget.data.hospital ?? '');
+    _diagnosisController = TextEditingController(text: widget.data.diagnosis ?? '');
+    _doctorController = TextEditingController(text: widget.data.doctorName ?? '');
+    _symptomsController = TextEditingController(text: widget.data.symptoms ?? '');
+    _costController = TextEditingController(text: widget.data.cost ?? '');
+    _resultController = TextEditingController(text: widget.data.result ?? '');
+    _dateController = TextEditingController(text: widget.data.date ?? '');
+    _medicineController = TextEditingController(text: widget.data.medicineName ?? '');
+  }
+
+  @override
+  void dispose() {
+    _hospitalController.dispose();
+    _diagnosisController.dispose();
+    _doctorController.dispose();
+    _symptomsController.dispose();
+    _costController.dispose();
+    _resultController.dispose();
+    _dateController.dispose();
+    _medicineController.dispose();
+    super.dispose();
+  }
+
+  /// Get the edited data as a new OcrExtractedData
+  OcrExtractedData _getEditedData() {
+    return OcrExtractedData(
+      hospital: _hospitalController.text.trim().isEmpty ? null : _hospitalController.text.trim(),
+      diagnosis: _diagnosisController.text.trim().isEmpty ? null : _diagnosisController.text.trim(),
+      doctorName: _doctorController.text.trim().isEmpty ? null : _doctorController.text.trim(),
+      symptoms: _symptomsController.text.trim().isEmpty ? null : _symptomsController.text.trim(),
+      cost: _costController.text.trim().isEmpty ? null : _costController.text.trim(),
+      result: _resultController.text.trim().isEmpty ? null : _resultController.text.trim(),
+      medicineName: _medicineController.text.trim().isEmpty ? null : _medicineController.text.trim(),
+      rawText: widget.data.rawText,
+      documentType: widget.data.documentType,
+    );
+  }
+
+  bool get _hasAnyData {
+    return _hospitalController.text.trim().isNotEmpty ||
+        _diagnosisController.text.trim().isNotEmpty ||
+        _doctorController.text.trim().isNotEmpty ||
+        _symptomsController.text.trim().isNotEmpty ||
+        _costController.text.trim().isNotEmpty ||
+        _resultController.text.trim().isNotEmpty ||
+        _medicineController.text.trim().isNotEmpty;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return DraggableScrollableSheet(
+      initialChildSize: 0.65,
+      minChildSize: 0.3,
+      maxChildSize: 0.9,
+      expand: false,
+      builder: (ctx, scrollController) => Column(
+        children: [
+          // Handle bar
+          Container(
+            margin: const EdgeInsets.only(top: 8),
+            width: 40, height: 4,
+            decoration: BoxDecoration(
+              color: theme.colorScheme.outlineVariant,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              children: [
+                Icon(Icons.document_scanner, color: theme.colorScheme.primary),
+                const SizedBox(width: 8),
+                Text(
+                  '识别到${widget.data.documentTypeName}',
+                  style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+                ),
+                const Spacer(),
+                Text(
+                  '可编辑修改',
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: theme.colorScheme.primary,
+                    fontStyle: FontStyle.italic,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+          Expanded(
+            child: ListView(
+              controller: scrollController,
+              padding: const EdgeInsets.all(16),
+              children: [
+                _buildEditableField(
+                  theme,
+                  label: '医院',
+                  controller: _hospitalController,
+                  icon: Icons.local_hospital_outlined,
+                ),
+                _buildEditableField(
+                  theme,
+                  label: '诊断',
+                  controller: _diagnosisController,
+                  icon: Icons.medical_services_outlined,
+                ),
+                _buildEditableField(
+                  theme,
+                  label: '医生',
+                  controller: _doctorController,
+                  icon: Icons.person_outlined,
+                ),
+                _buildEditableField(
+                  theme,
+                  label: '症状',
+                  controller: _symptomsController,
+                  icon: Icons.sick_outlined,
+                  maxLines: 2,
+                ),
+                _buildEditableField(
+                  theme,
+                  label: '费用',
+                  controller: _costController,
+                  icon: Icons.payments_outlined,
+                  keyboardType: TextInputType.number,
+                ),
+                _buildEditableField(
+                  theme,
+                  label: '药品',
+                  controller: _medicineController,
+                  icon: Icons.medication_outlined,
+                ),
+                _buildEditableField(
+                  theme,
+                  label: '结果',
+                  controller: _resultController,
+                  icon: Icons.summarize_outlined,
+                  maxLines: 2,
+                ),
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.primaryContainer.withValues(alpha: 0.3),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.info_outline, size: 16, color: theme.colorScheme.primary),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          '点击可修改识别结果，仅填入当前为空的字段',
+                          style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.primary),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          // Action buttons
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.pop(context, null),
+                    child: const Text('忽略'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: _hasAnyData
+                        ? () => Navigator.pop(context, _getEditedData())
+                        : null,
+                    icon: const Icon(Icons.check, size: 18),
+                    label: const Text('确认填入'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEditableField(
+    ThemeData theme, {
+    required String label,
+    required TextEditingController controller,
+    required IconData icon,
+    int maxLines = 1,
+    TextInputType? keyboardType,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: TextField(
+        controller: controller,
+        maxLines: maxLines,
+        keyboardType: keyboardType,
+        decoration: InputDecoration(
+          labelText: label,
+          prefixIcon: Icon(icon, size: 20),
+          border: const OutlineInputBorder(),
+          isDense: true,
+          suffixIcon: controller.text.isNotEmpty
+              ? IconButton(
+                  icon: const Icon(Icons.clear, size: 18),
+                  onPressed: () {
+                    setState(() {
+                      controller.clear();
+                    });
+                  },
+                )
+              : null,
+        ),
+        onChanged: (_) => setState(() {}),
+      ),
     );
   }
 }

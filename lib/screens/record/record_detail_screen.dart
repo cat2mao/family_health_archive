@@ -8,7 +8,7 @@ import 'package:intl/intl.dart';
 import '../../core/enums.dart';
 import '../../data/database/app_database.dart';
 import '../../providers/app_providers.dart';
-import '../../widgets/person_avatar.dart';
+import '../../widgets/fullscreen_image_viewer.dart';
 
 class RecordDetailScreen extends ConsumerStatefulWidget {
   const RecordDetailScreen({super.key, required this.recordId});
@@ -96,7 +96,7 @@ class _RecordDetailScreenState extends ConsumerState<RecordDetailScreen> {
                         const SizedBox(height: 4),
                         Row(
                           children: [
-                            Icon(Icons.location_on, size: 18, color: theme.colorScheme.onSurfaceVariant),
+                            Icon(Icons.meeting_room, size: 18, color: theme.colorScheme.onSurfaceVariant),
                             const SizedBox(width: 8),
                             Text(record.location, style: theme.textTheme.bodyMedium),
                           ],
@@ -131,6 +131,25 @@ class _RecordDetailScreenState extends ConsumerState<RecordDetailScreen> {
               // Tags
               _buildTagsSection(context),
               const SizedBox(height: 12),
+
+              // Notes
+              // Treatment
+              if (record.treatment != null && record.treatment!.isNotEmpty)
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('处置', style: theme.textTheme.titleSmall),
+                        const SizedBox(height: 8),
+                        Text(record.treatment!, style: theme.textTheme.bodyMedium),
+                      ],
+                    ),
+                  ),
+                ),
+              if (record.treatment != null && record.treatment!.isNotEmpty)
+                const SizedBox(height: 12),
 
               // Notes
               if (record.notes != null && record.notes!.isNotEmpty)
@@ -299,6 +318,12 @@ class _RecordDetailScreenState extends ConsumerState<RecordDetailScreen> {
         if (attachments.isEmpty) return const SizedBox.shrink();
         final theme = Theme.of(context);
 
+        // Collect all image paths for the full-screen viewer
+        final allImagePaths = attachments
+            .where((a) => a.attachmentFileType != FileType.pdf)
+            .map((a) => a.filePath)
+            .toList();
+
         // Group by type
         final grouped = <String, List<AttachmentRow>>{};
         for (final a in attachments) {
@@ -328,7 +353,7 @@ class _RecordDetailScreenState extends ConsumerState<RecordDetailScreen> {
                           separatorBuilder: (_, __) => const SizedBox(width: 8),
                           itemBuilder: (context, index) {
                             final att = entry.value[index];
-                            return _AttachmentThumb(attachment: att);
+                            return _AttachmentThumb(attachment: att, allImagePaths: allImagePaths);
                           },
                         ),
                       ),
@@ -417,8 +442,9 @@ class _RecordDetailScreenState extends ConsumerState<RecordDetailScreen> {
 }
 
 class _AttachmentThumb extends StatelessWidget {
-  const _AttachmentThumb({required this.attachment});
+  const _AttachmentThumb({required this.attachment, required this.allImagePaths});
   final AttachmentRow attachment;
+  final List<String> allImagePaths;
 
   @override
   Widget build(BuildContext context) {
@@ -429,13 +455,9 @@ class _AttachmentThumb extends StatelessWidget {
     return GestureDetector(
       onTap: () {
         if (!isPdf) {
-          showDialog(
-            context: context,
-            builder: (ctx) => Dialog(
-              child: InteractiveViewer(
-                child: Image.file(File(attachment.filePath), fit: BoxFit.contain),
-              ),
-            ),
+          FullscreenImageViewer.show(
+            context,
+            imagePath: attachment.filePath,
           );
         }
       },

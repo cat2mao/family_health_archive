@@ -126,6 +126,7 @@ enum RepeatType {
   daily('daily', '每天'),
   weekly('weekly', '每周'),
   monthly('monthly', '每月'),
+  quarterly('quarterly', '每季度'),
   yearly('yearly', '每年');
 
   const RepeatType(this.code, this.label);
