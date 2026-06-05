@@ -49,10 +49,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           ),
           ListTile(
             leading: const Icon(Icons.table_chart_outlined),
-            title: const Text('导出数据 (Excel)'),
+            title: const Text('导出数据 (CSV)'),
             subtitle: const Text('表格格式，方便电脑查看'),
             trailing: const Icon(Icons.chevron_right),
-            onTap: _exportExcel,
+            onTap: _exportCsv,
           ),
           ListTile(
             leading: const Icon(Icons.download),
@@ -85,6 +85,13 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             subtitle: const Text('查看当前所有已调度的通知'),
             trailing: const Icon(Icons.chevron_right),
             onTap: _showPendingNotifications,
+          ),
+          ListTile(
+            leading: const Icon(Icons.phonelink_setup),
+            title: const Text('小米/HyperOS 通知设置指南'),
+            subtitle: const Text('自启动、悬浮通知、电池优化检查'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => NotificationService.showXiaomiPermissionGuide(context),
           ),
           ListTile(
             leading: const Icon(Icons.settings),
@@ -161,7 +168,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     }
   }
 
-  Future<void> _exportExcel() async {
+  Future<void> _exportCsv() async {
     try {
       final db = await ref.read(databaseProvider.future);
       final data = await db.exportAllData();
@@ -607,7 +614,9 @@ class _AiOcrSettingsState extends State<_AiOcrSettings> {
       apiKey: _apiKeyController.text.trim(),
       endpoint: endpoint.isEmpty ? 'https://api.openai.com/v1' : endpoint,
       model: model.isEmpty ? 'gpt-4o-mini' : model,
+      visionModel: 'gpt-4o',
       enabled: _enabled,
+      visionEnabled: false, // Vision requires manual enable in settings
     );
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(

@@ -90,6 +90,12 @@ class HomeScreen extends ConsumerWidget {
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () {
           final selectedId = ref.read(selectedPersonIdProvider);
+          if (selectedId == null) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('请先添加家庭成员')),
+            );
+            return;
+          }
           context.push('/record/edit?personId=$selectedId');
         },
         icon: const Icon(Icons.add),

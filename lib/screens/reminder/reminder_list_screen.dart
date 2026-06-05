@@ -6,6 +6,7 @@ import 'package:intl/intl.dart';
 import '../../core/enums.dart';
 import '../../data/database/app_database.dart';
 import '../../providers/app_providers.dart';
+import '../../services/notification_service.dart';
 
 class ReminderListScreen extends ConsumerStatefulWidget {
   const ReminderListScreen({super.key});
@@ -386,6 +387,16 @@ class _ReminderListScreenState extends ConsumerState<ReminderListScreen>
   Future<void> _completeReminder(ReminderRow reminder) async {
     final repo = await ref.read(reminderRepositoryProvider.future);
     await repo.markCompleted(reminder.id);
+    // Cancel associated notifications
+    final notifId = NotificationService.reminderNotificationId(reminder.id);
+    await NotificationService.cancel(notifId);
+    // Also cancel medication time slot notifications
+    if (reminder.dailyTimes != null && reminder.dailyTimes!.isNotEmpty) {
+      final times = reminder.dailyTimes!.split(',').where((t) => t.trim().isNotEmpty).toList();
+      for (int i = 0; i < times.length; i++) {
+        await NotificationService.cancel(notifId + i);
+      }
+    }
     ref.invalidate(activeRemindersProvider);
     ref.invalidate(archivedRemindersProvider);
     if (mounted) {
@@ -414,6 +425,16 @@ class _ReminderListScreenState extends ConsumerState<ReminderListScreen>
     if (ok != true) return;
     final repo = await ref.read(reminderRepositoryProvider.future);
     await repo.delete(reminder.id);
+    // Cancel associated notifications
+    final notifId = NotificationService.reminderNotificationId(reminder.id);
+    await NotificationService.cancel(notifId);
+    // Also cancel medication time slot notifications
+    if (reminder.dailyTimes != null && reminder.dailyTimes!.isNotEmpty) {
+      final times = reminder.dailyTimes!.split(',').where((t) => t.trim().isNotEmpty).toList();
+      for (int i = 0; i < times.length; i++) {
+        await NotificationService.cancel(notifId + i);
+      }
+    }
     ref.invalidate(activeRemindersProvider);
     ref.invalidate(archivedRemindersProvider);
   }

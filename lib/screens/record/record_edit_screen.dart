@@ -183,10 +183,20 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
   /// Add image attachment and auto-OCR it
   Future<void> _addImageAttachment(AttachmentType type, ImageSource source) async {
     final picker = ImagePicker();
-    final file = await picker.pickImage(source: source);
+    final file = await picker.pickImage(
+      source: source,
+      maxWidth: 2048,
+      imageQuality: 92,
+    );
     if (file == null) return;
 
     final original = File(file.path);
+
+    // Run OCR on the higher-quality original before compression
+    // (OCR service does its own resizing/preprocessing internally)
+    _autoOcrOnImage(original.path);
+
+    // Compress for storage
     final compressed = await ImageCompressService.compressImage(original);
     if (compressed == null) return;
 
@@ -200,9 +210,6 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
       ));
       _markChanged();
     });
-
-    // Auto-OCR the uploaded image (only for image files, not PDFs)
-    _autoOcrOnImage(compressed.path);
   }
 
   Future<void> _addPdfAttachment(AttachmentType type) async {
@@ -235,8 +242,23 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
     try {
       var data = await OcrService.recognizeFromFile(imagePath);
 
-      // Try AI enhancement if enabled
-      if (data.rawText != null && data.rawText!.isNotEmpty) {
+      // Try vision model first if enabled (sends image directly to AI)
+      bool visionTried = false;
+      if (await AiOcrService.isVisionEnabled() && await AiOcrService.isEnabled()) {
+        try {
+          final visionData = await AiOcrService.analyzeImageWithVision(imagePath);
+          if (visionData != null && visionData.hasAnyData) {
+            data = visionData;
+            visionTried = true;
+            debugPrint('Vision model OCR successful');
+          }
+        } catch (e) {
+          debugPrint('Vision model failed, falling back: $e');
+        }
+      }
+
+      // Try text-based AI enhancement if vision wasn't used or failed
+      if (!visionTried && data.rawText != null && data.rawText!.isNotEmpty) {
         try {
           final aiData = await AiOcrService.analyzeWithAi(data.rawText!);
           if (aiData != null) {
@@ -247,10 +269,19 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
         }
       }
 
-      if (!mounted || !data.hasAnyData) return;
+      if (!mounted || !data.hasAnyData) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('未识别到文字内容，请手动填写'),
+              duration: Duration(seconds: 2),
+            ),
+          );
+        }
+        return;
+      }
 
       // Show editable OCR result sheet and get edited data
-      // Task 5: Disable swipe-to-dismiss to prevent accidental dismissal
       final editedData = await showModalBottomSheet<OcrExtractedData>(
         context: context,
         isScrollControlled: true,
@@ -261,20 +292,16 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
 
       if (editedData != null && mounted) {
         setState(() {
-          // Task 1 & 2: Append logic - if field already has content, append new content after it
-          // For fields that should be appended (symptoms, diagnosis, treatment, result, medicine)
           if (editedData.hospital != null) {
             if (_hospitalController.text.trim().isEmpty) {
               _hospitalController.text = editedData.hospital!;
             }
-            // Hospital doesn't append - keep existing
           }
           if (editedData.diagnosis != null) {
             final existing = _diagnosisController.text.trim();
             if (existing.isEmpty) {
               _diagnosisController.text = editedData.diagnosis!;
             } else if (!existing.contains(editedData.diagnosis!)) {
-              // Append new diagnosis
               _diagnosisController.text = '$existing; ${editedData.diagnosis!}';
             }
           }
@@ -286,15 +313,13 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
             if (existing.isEmpty) {
               _symptomsController.text = editedData.symptoms!;
             } else if (!existing.contains(editedData.symptoms!)) {
-              // Append new symptoms
               _symptomsController.text = '$existing\n${editedData.symptoms!}';
             }
           }
           if (editedData.cost != null) {
-            // Task 3: Track individual invoice costs and accumulate total
             final newCost = double.tryParse(editedData.cost!);
             if (newCost != null) {
-              _invoiceCosts.add(newCost); // Track individual invoice cost
+              _invoiceCosts.add(newCost);
               final existingCost = double.tryParse(_costController.text.trim());
               if (existingCost != null) {
                 _costController.text = (existingCost + newCost).toStringAsFixed(2);
@@ -308,7 +333,6 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
             if (existing.isEmpty) {
               _resultController.text = editedData.result!;
             } else if (!existing.contains(editedData.result!)) {
-              // Append new result
               _resultController.text = '$existing; ${editedData.result!}';
             }
           }
@@ -317,7 +341,6 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
             if (existing.isEmpty) {
               _treatmentController.text = editedData.treatment!;
             } else if (!existing.contains(editedData.treatment!)) {
-              // Append new treatment
               _treatmentController.text = '$existing; ${editedData.treatment!}';
             }
           }
@@ -326,7 +349,6 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
             if (existing.isEmpty) {
               _medicineController.text = editedData.medicineName!;
             } else if (!existing.contains(editedData.medicineName!)) {
-              // Append new medicine
               _medicineController.text = '$existing; ${editedData.medicineName!}';
             }
           }
@@ -340,7 +362,14 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
       }
     } catch (e) {
       debugPrint('Auto OCR failed: $e');
-      // Silently fail - don't bother user if auto-OCR fails
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('OCR识别失败，请手动填写'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
     } finally {
       if (mounted) {
         setState(() {
@@ -439,6 +468,7 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
           result: _resultController.text.trim().isEmpty ? null : _resultController.text.trim(),
           treatment: _treatmentController.text.trim().isEmpty ? null : _treatmentController.text.trim(),
           notes: _notesController.text.trim().isEmpty ? null : _notesController.text.trim(),
+          medicine: _medicineController.text.trim().isEmpty ? null : _medicineController.text.trim(),
           cost: cost,
           createdAt: _existing!.createdAt,
         );
@@ -460,6 +490,7 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
           result: _resultController.text.trim().isEmpty ? null : _resultController.text.trim(),
           treatment: _treatmentController.text.trim().isEmpty ? null : _treatmentController.text.trim(),
           notes: _notesController.text.trim().isEmpty ? null : _notesController.text.trim(),
+          medicine: _medicineController.text.trim().isEmpty ? null : _medicineController.text.trim(),
           cost: cost,
         );
       }
@@ -686,7 +717,6 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
           TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('离开')),
           FilledButton(onPressed: () async {
             await _save();
-            if (ctx.mounted) Navigator.pop(ctx, true);
           }, child: const Text('保存')),
         ],
       ),
@@ -780,11 +810,10 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
           },
           onSelected: (value) => _hospitalController.text = value,
           fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
-            // Sync controllers
-            _hospitalController.text = controller.text;
-            controller.addListener(() {
-              _hospitalController.text = controller.text;
-            });
+            // Sync OCR-set value into the autocomplete controller
+            if (_hospitalController.text != controller.text) {
+              controller.text = _hospitalController.text;
+            }
             return TextFormField(
               controller: controller,
               focusNode: focusNode,

@@ -214,6 +214,14 @@ class _ReminderEditScreenState extends ConsumerState<ReminderEditScreen> {
 
   Future<void> _scheduleNotification(ReminderRow reminder) async {
     final notifId = NotificationService.reminderNotificationId(reminder.id);
+
+    // Cancel any existing notifications for this reminder before re-scheduling
+    await NotificationService.cancel(notifId);
+    // Also cancel potential medication time slot notifications (cancel range)
+    for (int i = 0; i < 10; i++) {
+      await NotificationService.cancel(notifId + i);
+    }
+
     final body = reminder.reminderType == ReminderType.medication
         ? '${reminder.medicineName ?? ''} ${reminder.dosage ?? ''}'.trim()
         : reminder.title;

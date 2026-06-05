@@ -24,7 +24,7 @@ class AppDatabase {
     final path = p.join(dir.path, 'family_health_archive.sqlite');
     return openDatabase(
       path,
-      version: 3,
+      version: 4,
       onCreate: (db, version) async {
         await _createAllTables(db);
       },
@@ -35,6 +35,9 @@ class AppDatabase {
         if (oldVersion < 3) {
           // Add treatment column to medical_records
           await db.execute('ALTER TABLE medical_records ADD COLUMN treatment TEXT');
+        }
+        if (oldVersion < 4) {
+          await db.execute('ALTER TABLE medical_records ADD COLUMN medicine TEXT');
         }
       },
     );
@@ -78,6 +81,7 @@ class AppDatabase {
         result TEXT,
         treatment TEXT,
         notes TEXT,
+        medicine TEXT,
         cost REAL,
         created_at INTEGER NOT NULL,
         FOREIGN KEY (person_id) REFERENCES persons(id) ON DELETE CASCADE
@@ -291,6 +295,16 @@ class AppDatabase {
 
   Future<void> insertAttachment(AttachmentRow row) async {
     await db.insert('attachments', row.toMap(), conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<AttachmentRow?> getAttachment(String id) async {
+    final rows = await db.query(
+      'attachments',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+    if (rows.isEmpty) return null;
+    return AttachmentRow.fromMap(rows.first);
   }
 
   Future<void> deleteAttachment(String id) async {
@@ -694,6 +708,7 @@ class MedicalRecordRow {
     this.focusOn,
     this.result,
     this.treatment,
+    this.medicine,
     this.notes,
     this.cost,
     required this.createdAt,
@@ -714,6 +729,7 @@ class MedicalRecordRow {
   final String? focusOn;
   final String? result;
   final String? treatment;
+  final String? medicine;
   final String? notes;
   final double? cost;
   final DateTime createdAt;
@@ -736,6 +752,7 @@ class MedicalRecordRow {
         'focus_on': focusOn,
         'result': result,
         'treatment': treatment,
+        'medicine': medicine,
         'notes': notes,
         'cost': cost,
         'created_at': createdAt.millisecondsSinceEpoch,
@@ -761,8 +778,9 @@ class MedicalRecordRow {
         focusOn: map['focus_on'] as String?,
         result: map['result'] as String?,
         treatment: map['treatment'] as String?,
+        medicine: map['medicine'] as String?,
         notes: map['notes'] as String?,
-        cost: map['cost'] as double?,
+        cost: (map['cost'] as num?)?.toDouble(),
         createdAt: DateTime.fromMillisecondsSinceEpoch(map['created_at']! as int),
       );
 

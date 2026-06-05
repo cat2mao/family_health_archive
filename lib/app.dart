@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'core/theme/app_theme.dart';
 import 'router/app_router.dart';
+import 'services/notification_service.dart';
 
 class FamilyHealthApp extends ConsumerWidget {
   FamilyHealthApp({super.key});
@@ -12,6 +13,11 @@ class FamilyHealthApp extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // Register notification tap handler to navigate to reminders tab
+    NotificationService.onNotificationTap = (payload) {
+      _router.go('/reminders');
+    };
+
     return MaterialApp.router(
       title: '家庭健康档案',
       debugShowCheckedModeBanner: false,

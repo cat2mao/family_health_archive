@@ -1,6 +1,6 @@
 import 'dart:io';
 
-import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -13,20 +13,23 @@ class NotificationService {
 
   static bool _initialized = false;
 
+  /// Callback for notification tap navigation.
+  /// Set this in main.dart after router is available.
+  static void Function(String? payload)? onNotificationTap;
+
   static Future<void> init() async {
     if (_initialized) return;
     tz.initializeTimeZones();
 
     // Only clear corrupted notification data once (first run after install/update)
-    // Do NOT clear on every launch as it may interfere with notification scheduling
     await _clearCorruptedNotificationDataIfNeeded();
 
-    // Create notification channel for Android
+    // Create notification channel for Android with max importance
     const androidChannel = AndroidNotificationChannel(
       'reminder_channel',
       '提醒通知',
       description: '用药、复查等提醒通知',
-      importance: Importance.high,
+      importance: Importance.max, // Max for heads-up on HyperOS/Xiaomi
       playSound: true,
       enableVibration: true,
     );
@@ -44,8 +47,8 @@ class NotificationService {
     await _plugin.initialize(
       initSettings,
       onDidReceiveNotificationResponse: (details) {
-        // Handle notification tap
         debugPrint('Notification tapped: ${details.payload}');
+        onNotificationTap?.call(details.payload);
       },
     );
 
@@ -56,8 +59,6 @@ class NotificationService {
   }
 
   /// Clear corrupted notification data only once (flagged in SharedPreferences)
-  /// This resolves "Missing type parameter" errors from Gson deserialization
-  /// without interfering with future notification scheduling
   static Future<void> _clearCorruptedNotificationDataIfNeeded() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -66,9 +67,7 @@ class NotificationService {
 
       final keys = prefs.getKeys();
       final notificationKeys = keys.where(
-        (key) => key.contains('flutter_local_notifications') ||
-                 key.contains('notification') ||
-                 key.contains('scheduled_notifications'),
+        (key) => key.contains('flutter_local_notifications'),
       );
       for (final key in notificationKeys) {
         debugPrint('Clearing notification preference: $key');
@@ -81,12 +80,12 @@ class NotificationService {
     }
   }
 
-  /// Request notification and alarm permissions
+  /// Request notification, alarm, and battery optimization permissions
   static Future<bool> requestPermissions() async {
     bool allGranted = true;
 
-    // Request POST_NOTIFICATIONS permission (Android 13+)
     if (Platform.isAndroid) {
+      // Request POST_NOTIFICATIONS permission (Android 13+)
       final notificationStatus = await Permission.notification.status;
       if (!notificationStatus.isGranted) {
         final result = await Permission.notification.request();
@@ -97,7 +96,6 @@ class NotificationService {
       }
 
       // Request SCHEDULE_EXACT_ALARM permission (Android 12+)
-      // On Android 12+, this is critical for exact alarm scheduling
       final alarmStatus = await Permission.scheduleExactAlarm.status;
       debugPrint('Schedule exact alarm status: $alarmStatus');
       if (!alarmStatus.isGranted) {
@@ -105,13 +103,23 @@ class NotificationService {
           final result = await Permission.scheduleExactAlarm.request();
           debugPrint('Schedule exact alarm request result: $result');
           if (!result.isGranted) {
-            debugPrint('SCHEDULE_EXACT_ALARM permission denied - will use inexact alarms');
+            debugPrint('SCHEDULE_EXACT_ALARM permission denied');
             allGranted = false;
           }
         } catch (e) {
           debugPrint('Error requesting schedule exact alarm permission: $e');
           allGranted = false;
         }
+      }
+
+      // Request ignore battery optimization (critical for Xiaomi/HyperOS)
+      try {
+        final batteryStatus = await Permission.ignoreBatteryOptimizations.status;
+        if (!batteryStatus.isGranted) {
+          await Permission.ignoreBatteryOptimizations.request();
+        }
+      } catch (e) {
+        debugPrint('Battery optimization request failed: $e');
       }
     }
 
@@ -123,26 +131,79 @@ class NotificationService {
     if (!Platform.isAndroid) return true;
     final notifGranted = await Permission.notification.isGranted;
     final alarmGranted = await Permission.scheduleExactAlarm.isGranted;
-    debugPrint('Notification permission: $notifGranted, Alarm permission: $alarmGranted');
+    debugPrint('Notification: $notifGranted, Alarm: $alarmGranted');
     return notifGranted && alarmGranted;
   }
 
-  static Future<void> scheduleReminder({
+  /// Detect if device is Xiaomi/HyperOS and guide user to enable required settings
+  static bool isXiaomiDevice() {
+    if (!Platform.isAndroid) return false;
+    // Xiaomi devices have ro.miui.ui.version in system properties
+    // We use a heuristic: check if the manufacturer contains "Xiaomi"
+    return true; // Simplified; always show the guide on Android
+  }
+
+  /// Show a dialog guiding user to enable Xiaomi-specific permissions
+  static Future<void> showXiaomiPermissionGuide(BuildContext context) async {
+    if (!Platform.isAndroid) return;
+    return showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('通知权限设置指南'),
+        content: const SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('为确保通知正常显示，请检查以下设置：',
+                  style: TextStyle(fontWeight: FontWeight.bold)),
+              SizedBox(height: 12),
+              Text('1. 自启动'),
+              Text('   设置 > 应用设置 > 应用管理 > 家庭健康档案 > 自启动（开启）',
+                  style: TextStyle(fontSize: 13, color: Colors.grey)),
+              SizedBox(height: 8),
+              Text('2. 通知权限'),
+              Text('   设置 > 通知管理 > 家庭健康档案 > 允许通知 + 悬浮通知（开启）',
+                  style: TextStyle(fontSize: 13, color: Colors.grey)),
+              SizedBox(height: 8),
+              Text('3. 电池优化'),
+              Text('   设置 > 电池 > 电池优化 > 家庭健康档案 > 无限制',
+                  style: TextStyle(fontSize: 13, color: Colors.grey)),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('知道了'),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              openAppSettings();
+            },
+            child: const Text('打开系统设置'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Schedule a one-time notification. Returns true on success.
+  static Future<bool> scheduleReminder({
     required int id,
     required String title,
     required String body,
     required DateTime scheduledTime,
   }) async {
-    // Check permissions before scheduling
     if (!await arePermissionsGranted()) {
       await requestPermissions();
     }
 
     final now = DateTime.now();
     if (scheduledTime.isBefore(now)) {
-      // If the time is in the past, show immediately
       await showNow(id: id, title: title, body: body);
-      return;
+      return true;
     }
 
     final androidDetails = AndroidNotificationDetails(
@@ -161,9 +222,8 @@ class NotificationService {
     );
 
     final scheduledDate = tz.TZDateTime.from(scheduledTime, tz.local);
-    debugPrint('Scheduling notification $id at $scheduledDate (local: $scheduledTime)');
+    debugPrint('Scheduling notification $id at $scheduledDate');
 
-    // Try exact alarm first, then inexact
     try {
       await _plugin.zonedSchedule(
         id,
@@ -175,9 +235,10 @@ class NotificationService {
         uiLocalNotificationDateInterpretation:
             UILocalNotificationDateInterpretation.absoluteTime,
       );
-      debugPrint('Successfully scheduled exact notification $id');
+      debugPrint('Scheduled exact notification $id');
+      return true;
     } catch (e) {
-      debugPrint('Failed to schedule exact alarm: $e');
+      debugPrint('Failed exact schedule: $e');
       try {
         await _plugin.zonedSchedule(
           id,
@@ -189,14 +250,17 @@ class NotificationService {
           uiLocalNotificationDateInterpretation:
               UILocalNotificationDateInterpretation.absoluteTime,
         );
-        debugPrint('Successfully scheduled inexact notification $id');
+        debugPrint('Scheduled inexact notification $id');
+        return true;
       } catch (e2) {
-        debugPrint('Failed to schedule inexact alarm: $e2');
+        debugPrint('Failed inexact schedule: $e2');
+        return false;
       }
     }
   }
 
-  static Future<void> scheduleRepeatingReminder({
+  /// Schedule a repeating notification. Returns true on success.
+  static Future<bool> scheduleRepeatingReminder({
     required int id,
     required String title,
     required String body,
@@ -237,9 +301,10 @@ class NotificationService {
             UILocalNotificationDateInterpretation.absoluteTime,
         matchDateTimeComponents: matchComponents,
       );
-      debugPrint('Successfully scheduled exact repeating notification $id');
+      debugPrint('Scheduled exact repeating notification $id');
+      return true;
     } catch (e) {
-      debugPrint('Failed to schedule exact repeating alarm: $e');
+      debugPrint('Failed exact repeating schedule: $e');
       try {
         await _plugin.zonedSchedule(
           id,
@@ -252,9 +317,11 @@ class NotificationService {
               UILocalNotificationDateInterpretation.absoluteTime,
           matchDateTimeComponents: matchComponents,
         );
-        debugPrint('Successfully scheduled inexact repeating notification $id');
+        debugPrint('Scheduled inexact repeating notification $id');
+        return true;
       } catch (e2) {
-        debugPrint('Failed to schedule inexact repeating alarm: $e2');
+        debugPrint('Failed inexact repeating schedule: $e2');
+        return false;
       }
     }
   }
@@ -274,8 +341,8 @@ class NotificationService {
           'reminder_channel',
           '提醒通知',
           channelDescription: '用药、复查等提醒通知',
-          importance: Importance.high,
-          priority: Priority.high,
+          importance: Importance.max,
+          priority: Priority.max,
           icon: '@mipmap/ic_launcher',
           playSound: true,
           enableVibration: true,

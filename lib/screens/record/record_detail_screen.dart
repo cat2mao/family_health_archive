@@ -132,7 +132,6 @@ class _RecordDetailScreenState extends ConsumerState<RecordDetailScreen> {
               _buildTagsSection(context),
               const SizedBox(height: 12),
 
-              // Notes
               // Treatment
               if (record.treatment != null && record.treatment!.isNotEmpty)
                 Card(

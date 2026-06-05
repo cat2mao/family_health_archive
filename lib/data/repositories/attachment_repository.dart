@@ -52,8 +52,7 @@ class AttachmentRepository {
   }
 
   Future<AttachmentRow?> _getById(String id) async {
-    // Simple lookup through all records' attachments
-    return null; // Will be handled by direct delete
+    return _db.getAttachment(id);
   }
 
   Future<void> _deleteFiles(AttachmentRow att) async {
