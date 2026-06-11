@@ -215,10 +215,19 @@ class NotificationService {
       icon: '@mipmap/ic_launcher',
       playSound: true,
       enableVibration: true,
+      enableLights: true,
+      ledColor: const Color(0xFF2A9D8F),
+      ledOnMs: 1000,
+      ledOffMs: 500,
       fullScreenIntent: true,
       category: AndroidNotificationCategory.alarm,
       visibility: NotificationVisibility.public,
       ticker: title,
+      showWhen: true,
+      when: DateTime.now().millisecondsSinceEpoch,
+      usesChronometer: false,
+      onlyAlertOnce: false,
+      autoCancel: true,
     );
 
     final scheduledDate = tz.TZDateTime.from(scheduledTime, tz.local);
@@ -254,7 +263,43 @@ class NotificationService {
         return true;
       } catch (e2) {
         debugPrint('Failed inexact schedule: $e2');
-        return false;
+        // Last resort: try alarmClock mode for best reliability on Xiaomi
+        try {
+          final alarmDetails = AndroidNotificationDetails(
+            'reminder_channel',
+            '提醒通知',
+            channelDescription: '用药、复查等提醒通知',
+            importance: Importance.max,
+            priority: Priority.max,
+            icon: '@mipmap/ic_launcher',
+            playSound: true,
+            enableVibration: true,
+            enableLights: true,
+            ledColor: const Color(0xFF2A9D8F),
+            fullScreenIntent: false,
+            category: AndroidNotificationCategory.alarm,
+            visibility: NotificationVisibility.public,
+            showWhen: true,
+            when: DateTime.now().millisecondsSinceEpoch,
+            onlyAlertOnce: false,
+            autoCancel: true,
+          );
+          await _plugin.zonedSchedule(
+            id,
+            title,
+            body,
+            scheduledDate,
+            NotificationDetails(android: alarmDetails),
+            androidScheduleMode: AndroidScheduleMode.alarmClock,
+            uiLocalNotificationDateInterpretation:
+                UILocalNotificationDateInterpretation.absoluteTime,
+          );
+          debugPrint('Scheduled alarmClock notification $id');
+          return true;
+        } catch (e3) {
+          debugPrint('Failed alarmClock schedule: $e3');
+          return false;
+        }
       }
     }
   }
@@ -280,10 +325,19 @@ class NotificationService {
       icon: '@mipmap/ic_launcher',
       playSound: true,
       enableVibration: true,
+      enableLights: true,
+      ledColor: const Color(0xFF2A9D8F),
+      ledOnMs: 1000,
+      ledOffMs: 500,
       fullScreenIntent: true,
       category: AndroidNotificationCategory.alarm,
       visibility: NotificationVisibility.public,
       ticker: title,
+      showWhen: true,
+      when: DateTime.now().millisecondsSinceEpoch,
+      usesChronometer: false,
+      onlyAlertOnce: false,
+      autoCancel: true,
     );
 
     final scheduledDate = tz.TZDateTime.from(scheduledTime, tz.local);
@@ -321,7 +375,44 @@ class NotificationService {
         return true;
       } catch (e2) {
         debugPrint('Failed inexact repeating schedule: $e2');
-        return false;
+        // Last resort: try alarmClock mode
+        try {
+          final alarmDetails = AndroidNotificationDetails(
+            'reminder_channel',
+            '提醒通知',
+            channelDescription: '用药、复查等提醒通知',
+            importance: Importance.max,
+            priority: Priority.max,
+            icon: '@mipmap/ic_launcher',
+            playSound: true,
+            enableVibration: true,
+            enableLights: true,
+            ledColor: const Color(0xFF2A9D8F),
+            fullScreenIntent: false,
+            category: AndroidNotificationCategory.alarm,
+            visibility: NotificationVisibility.public,
+            showWhen: true,
+            when: DateTime.now().millisecondsSinceEpoch,
+            onlyAlertOnce: false,
+            autoCancel: true,
+          );
+          await _plugin.zonedSchedule(
+            id,
+            title,
+            body,
+            scheduledDate,
+            NotificationDetails(android: alarmDetails),
+            androidScheduleMode: AndroidScheduleMode.alarmClock,
+            uiLocalNotificationDateInterpretation:
+                UILocalNotificationDateInterpretation.absoluteTime,
+            matchDateTimeComponents: matchComponents,
+          );
+          debugPrint('Scheduled alarmClock repeating notification $id');
+          return true;
+        } catch (e3) {
+          debugPrint('Failed alarmClock repeating schedule: $e3');
+          return false;
+        }
       }
     }
   }

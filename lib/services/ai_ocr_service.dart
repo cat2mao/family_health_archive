@@ -67,10 +67,11 @@ class AiOcrService {
 2. 优先提取明确的诊断字段（门诊诊断 > 初步诊断 > 诊断）
 3. 费用：仅从发票/收据中提取阿拉伯数字金额，优先"实付"/"合计"对应的金额
 4. 日期：统一为YYYY-MM-DD格式
-5. 药品：提取处方中的药品通用名，忽略剂型说明
+5. 药品：提取处方中的药品通用名，包含规格信息（如"阿莫西林胶囊 0.25g×24粒"），多个药品用换行符"\\n"分隔
+6. 用法用量：提取药品的使用方法（如"口服，每次2粒，每日3次，连服7天"），多个药品的用法也用"\\n"分隔
 
 返回纯JSON（不要markdown代码块），格式如下：
-{"hospital": "医院名称或null", "diagnosis": "诊断或null", "doctorName": "医生姓名或null", "symptoms": "症状/主诉或null", "cost": "金额数字或null", "date": "日期或null", "medicineName": "药品名或null", "result": "检查结果或null", "treatment": "处置方案或null", "documentType": "medicalRecord/invoice/prescription/labReport/unknown"}''';
+{"hospital": "医院名称或null", "diagnosis": "诊断或null", "doctorName": "医生姓名或null", "symptoms": "症状/主诉或null", "cost": "金额数字或null", "date": "日期或null", "medicineName": "药品名（含规格，多个用\\n分隔）或null", "medicineUsage": "用法用量（多个用\\n分隔）或null", "result": "检查结果或null", "treatment": "处置方案或null", "documentType": "medicalRecord/invoice/prescription/labReport/unknown"}''';
 
   /// Analyze OCR raw text with AI (text-only mode)
   static Future<OcrExtractedData?> analyzeWithAi(String rawText) async {
@@ -232,10 +233,15 @@ class AiOcrService {
   static OcrExtractedData _buildFromJson(Map<String, dynamic> extracted, String? rawText) {
     OcrDocumentType docType = OcrDocumentType.unknown;
     final dtStr = extracted['documentType'] as String?;
-    if (dtStr == 'medicalRecord') docType = OcrDocumentType.medicalRecord;
-    else if (dtStr == 'invoice') docType = OcrDocumentType.invoice;
-    else if (dtStr == 'prescription') docType = OcrDocumentType.prescription;
-    else if (dtStr == 'labReport') docType = OcrDocumentType.labReport;
+    if (dtStr == 'medicalRecord') {
+      docType = OcrDocumentType.medicalRecord;
+    } else if (dtStr == 'invoice') {
+      docType = OcrDocumentType.invoice;
+    } else if (dtStr == 'prescription') {
+      docType = OcrDocumentType.prescription;
+    } else if (dtStr == 'labReport') {
+      docType = OcrDocumentType.labReport;
+    }
 
     return OcrExtractedData(
       hospital: extracted['hospital'] as String?,
@@ -245,6 +251,7 @@ class AiOcrService {
       cost: extracted['cost']?.toString(),
       date: extracted['date'] as String?,
       medicineName: extracted['medicineName'] as String?,
+      medicineUsage: extracted['medicineUsage'] as String?,
       result: extracted['result'] as String?,
       treatment: extracted['treatment'] as String?,
       rawText: rawText,

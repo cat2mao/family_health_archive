@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart' as fp;
@@ -42,7 +43,7 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
   final _notesController = TextEditingController();
   final _costController = TextEditingController();
   final _hospitalDaysController = TextEditingController();
-  final _medicineController = TextEditingController();
+  final List<_MedicineEntry> _medicineEntries = [_MedicineEntry()];
 
   // Track individual invoice costs for breakdown display
   final List<double> _invoiceCosts = [];
@@ -73,6 +74,19 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
 
   bool get _isEdit => widget.recordId != null;
 
+  /// Serialize medicine entries as a JSON array string.
+  /// Each entry has 'name' and optional 'dosage'.
+  String get _medicineText {
+    final items = _medicineEntries
+        .where((e) => e.nameController.text.trim().isNotEmpty)
+        .map((e) => {
+              'name': e.nameController.text.trim(),
+              'dosage': e.dosageController.text.trim(),
+            })
+        .toList();
+    return items.isEmpty ? '' : jsonEncode(items);
+  }
+
   @override
   void initState() {
     super.initState();
@@ -100,6 +114,34 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
         _focusOnController.text = row.focusOn ?? '';
         _resultController.text = row.result ?? '';
         _treatmentController.text = row.treatment ?? '';
+        // Load medicines: support both JSON array and legacy newline-separated format
+        _medicineEntries.clear();
+        final rawMedicine = row.medicine ?? '';
+        if (rawMedicine.trim().startsWith('[')) {
+          // New JSON format
+          try {
+            final list = jsonDecode(rawMedicine) as List<dynamic>;
+            for (final item in list) {
+              final map = item as Map<String, dynamic>;
+              _medicineEntries.add(_MedicineEntry(
+                name: (map['name'] ?? '').toString(),
+                dosage: (map['dosage'] ?? '').toString(),
+              ));
+            }
+          } catch (_) {
+            // Fall through to legacy format
+          }
+        }
+        if (_medicineEntries.isEmpty && rawMedicine.trim().isNotEmpty) {
+          // Legacy format: newline-separated names
+          final medicines = rawMedicine.split('\n').where((m) => m.trim().isNotEmpty).toList();
+          for (final m in medicines) {
+            _medicineEntries.add(_MedicineEntry(name: m.trim()));
+          }
+        }
+        if (_medicineEntries.isEmpty) {
+          _medicineEntries.add(_MedicineEntry());
+        }
         _notesController.text = row.notes ?? '';
         _costController.text = row.cost?.toString() ?? '';
         _admissionDate = row.admissionDate;
@@ -132,7 +174,9 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
     _notesController.dispose();
     _costController.dispose();
     _hospitalDaysController.dispose();
-    _medicineController.dispose();
+    for (final e in _medicineEntries) {
+      e.dispose();
+    }
     super.dispose();
   }
 
@@ -345,11 +389,33 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
             }
           }
           if (editedData.medicineName != null) {
-            final existing = _medicineController.text.trim();
-            if (existing.isEmpty) {
-              _medicineController.text = editedData.medicineName!;
-            } else if (!existing.contains(editedData.medicineName!)) {
-              _medicineController.text = '$existing; ${editedData.medicineName!}';
+            // Add OCR medicine to the first empty row or append as new row
+            final meds = editedData.medicineName!.split(RegExp(r'[;；\n]')).where((m) => m.trim().isNotEmpty).toList();
+            final usages = editedData.medicineUsage?.split(RegExp(r'[;；\n]')).where((m) => m.trim().isNotEmpty).toList() ?? [];
+            for (int i = 0; i < meds.length; i++) {
+              final med = meds[i].trim();
+              final usage = i < usages.length ? usages[i].trim() : '';
+              final emptyIndex = _medicineEntries.indexWhere((e) => e.nameController.text.trim().isEmpty);
+              if (emptyIndex >= 0) {
+                _medicineEntries[emptyIndex].nameController.text = med;
+                if (usage.isNotEmpty) {
+                  _medicineEntries[emptyIndex].dosageController.text = usage;
+                }
+              } else if (!_medicineEntries.any((e) => e.nameController.text.trim() == med)) {
+                // Avoid duplicates
+                _medicineEntries.add(_MedicineEntry(name: med, dosage: usage));
+              }
+            }
+          }
+          if (editedData.date != null) {
+            // Apply OCR date to visit time if user hasn't manually changed it
+            final parsed = DateTime.tryParse(editedData.date!);
+            if (parsed != null && !_isEdit) {
+              // For new records, use the OCR date (keep user's time if already set)
+              _visitTime = DateTime(
+                parsed.year, parsed.month, parsed.day,
+                _visitTime.hour, _visitTime.minute,
+              );
             }
           }
         });
@@ -434,8 +500,10 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
     if (!_hasChanges) setState(() => _hasChanges = true);
   }
 
-  Future<void> _save() async {
-    if (!_formKey.currentState!.validate()) return;
+  /// Save the record. Returns true on success.
+  /// If [popAfterSave] is true, pops the current route via GoRouter.
+  Future<bool> _save({bool popAfterSave = true}) async {
+    if (!_formKey.currentState!.validate()) return false;
     setState(() => _saving = true);
 
     try {
@@ -468,7 +536,7 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
           result: _resultController.text.trim().isEmpty ? null : _resultController.text.trim(),
           treatment: _treatmentController.text.trim().isEmpty ? null : _treatmentController.text.trim(),
           notes: _notesController.text.trim().isEmpty ? null : _notesController.text.trim(),
-          medicine: _medicineController.text.trim().isEmpty ? null : _medicineController.text.trim(),
+          medicine: _medicineText.isEmpty ? null : _medicineText,
           cost: cost,
           createdAt: _existing!.createdAt,
         );
@@ -490,7 +558,7 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
           result: _resultController.text.trim().isEmpty ? null : _resultController.text.trim(),
           treatment: _treatmentController.text.trim().isEmpty ? null : _treatmentController.text.trim(),
           notes: _notesController.text.trim().isEmpty ? null : _notesController.text.trim(),
-          medicine: _medicineController.text.trim().isEmpty ? null : _medicineController.text.trim(),
+          medicine: _medicineText.isEmpty ? null : _medicineText,
           cost: cost,
         );
       }
@@ -513,7 +581,10 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
 
       ref.invalidate(recordsForSelectedPersonProvider);
       ref.invalidate(allRecordsProvider);
-      if (mounted) context.pop();
+      if (popAfterSave && mounted) context.pop();
+      return true;
+    } catch (e) {
+      return false;
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -652,16 +723,78 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
           ),
           const SizedBox(height: 12),
 
-          // Medicine (prescription)
-          TextFormField(
-            controller: _medicineController,
-            decoration: const InputDecoration(
-              labelText: '药品（可选）',
-              border: OutlineInputBorder(),
-              prefixIcon: Icon(Icons.medication_outlined),
-            ),
-            maxLines: 2,
-            onChanged: (_) => _markChanged(),
+          // Medicine (prescription) — one row per medicine with dosage
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Text('药品', style: theme.textTheme.titleSmall),
+                  const Spacer(),
+                  TextButton.icon(
+                    onPressed: () {
+                      setState(() => _medicineEntries.add(_MedicineEntry()));
+                      _markChanged();
+                    },
+                    icon: const Icon(Icons.add, size: 18),
+                    label: const Text('添加药品'),
+                  ),
+                ],
+              ),
+              ...List.generate(_medicineEntries.length, (i) {
+                final entry = _medicineEntries[i];
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Column(
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextFormField(
+                              controller: entry.nameController,
+                              decoration: InputDecoration(
+                                labelText: '药品 ${i + 1}',
+                                border: const OutlineInputBorder(),
+                                hintText: i == 0 ? '如：阿莫西林胶囊' : null,
+                                prefixIcon: const Icon(Icons.medication_outlined),
+                                isDense: true,
+                              ),
+                              onChanged: (_) => _markChanged(),
+                            ),
+                          ),
+                          if (_medicineEntries.length > 1)
+                            Padding(
+                              padding: const EdgeInsets.only(left: 8),
+                              child: IconButton(
+                                icon: const Icon(Icons.remove_circle_outline, color: Colors.red),
+                                onPressed: () {
+                                  setState(() {
+                                    _medicineEntries[i].dispose();
+                                    _medicineEntries.removeAt(i);
+                                    _markChanged();
+                                  });
+                                },
+                              ),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      TextFormField(
+                        controller: entry.dosageController,
+                        decoration: InputDecoration(
+                          labelText: '用法用量',
+                          border: const OutlineInputBorder(),
+                          hintText: i == 0 ? '如：每次1粒，每日3次，饭后服用' : null,
+                          prefixIcon: const Icon(Icons.schedule_outlined),
+                          isDense: true,
+                        ),
+                        onChanged: (_) => _markChanged(),
+                      ),
+                    ],
+                  ),
+                );
+              }),
+            ],
           ),
           const SizedBox(height: 12),
 
@@ -716,7 +849,11 @@ class _RecordEditScreenState extends ConsumerState<RecordEditScreen> {
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('离开')),
           FilledButton(onPressed: () async {
-            await _save();
+            final ok = await _save(popAfterSave: false);
+            if (ok && ctx.mounted) {
+              // Close the dialog, then pop the page
+              Navigator.of(ctx).pop(true);
+            }
           }, child: const Text('保存')),
         ],
       ),
@@ -1298,8 +1435,10 @@ class _OcrResultSheetState extends State<_OcrResultSheet> {
   late final TextEditingController _symptomsController;
   late final TextEditingController _costController;
   late final TextEditingController _resultController;
+  late final TextEditingController _treatmentController;
   late final TextEditingController _dateController;
   late final TextEditingController _medicineController;
+  late final TextEditingController _usageController;
 
   @override
   void initState() {
@@ -1310,8 +1449,10 @@ class _OcrResultSheetState extends State<_OcrResultSheet> {
     _symptomsController = TextEditingController(text: widget.data.symptoms ?? '');
     _costController = TextEditingController(text: widget.data.cost ?? '');
     _resultController = TextEditingController(text: widget.data.result ?? '');
+    _treatmentController = TextEditingController(text: widget.data.treatment ?? '');
     _dateController = TextEditingController(text: widget.data.date ?? '');
     _medicineController = TextEditingController(text: widget.data.medicineName ?? '');
+    _usageController = TextEditingController(text: widget.data.medicineUsage ?? '');
   }
 
   @override
@@ -1322,8 +1463,10 @@ class _OcrResultSheetState extends State<_OcrResultSheet> {
     _symptomsController.dispose();
     _costController.dispose();
     _resultController.dispose();
+    _treatmentController.dispose();
     _dateController.dispose();
     _medicineController.dispose();
+    _usageController.dispose();
     super.dispose();
   }
 
@@ -1336,7 +1479,10 @@ class _OcrResultSheetState extends State<_OcrResultSheet> {
       symptoms: _symptomsController.text.trim().isEmpty ? null : _symptomsController.text.trim(),
       cost: _costController.text.trim().isEmpty ? null : _costController.text.trim(),
       result: _resultController.text.trim().isEmpty ? null : _resultController.text.trim(),
+      treatment: _treatmentController.text.trim().isEmpty ? null : _treatmentController.text.trim(),
+      date: _dateController.text.trim().isEmpty ? null : _dateController.text.trim(),
       medicineName: _medicineController.text.trim().isEmpty ? null : _medicineController.text.trim(),
+      medicineUsage: _usageController.text.trim().isEmpty ? null : _usageController.text.trim(),
       rawText: widget.data.rawText,
       documentType: widget.data.documentType,
     );
@@ -1349,7 +1495,9 @@ class _OcrResultSheetState extends State<_OcrResultSheet> {
         _symptomsController.text.trim().isNotEmpty ||
         _costController.text.trim().isNotEmpty ||
         _resultController.text.trim().isNotEmpty ||
-        _medicineController.text.trim().isNotEmpty;
+        _treatmentController.text.trim().isNotEmpty ||
+        _medicineController.text.trim().isNotEmpty ||
+        _usageController.text.trim().isNotEmpty;
   }
 
   @override
@@ -1433,9 +1581,26 @@ class _OcrResultSheetState extends State<_OcrResultSheet> {
                 ),
                 _buildEditableField(
                   theme,
+                  label: '处置',
+                  controller: _treatmentController,
+                  icon: Icons.healing_outlined,
+                  maxLines: 2,
+                ),
+                _buildEditableField(
+                  theme,
                   label: '药品',
                   controller: _medicineController,
                   icon: Icons.medication_outlined,
+                  maxLines: 3,
+                  hintText: '多个药品请换行输入',
+                ),
+                _buildEditableField(
+                  theme,
+                  label: '用法用量',
+                  controller: _usageController,
+                  icon: Icons.schedule_outlined,
+                  maxLines: 3,
+                  hintText: '如：口服，每次2粒，每日3次',
                 ),
                 _buildEditableField(
                   theme,
@@ -1503,6 +1668,7 @@ class _OcrResultSheetState extends State<_OcrResultSheet> {
     required IconData icon,
     int maxLines = 1,
     TextInputType? keyboardType,
+    String? hintText,
   }) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
@@ -1512,6 +1678,7 @@ class _OcrResultSheetState extends State<_OcrResultSheet> {
         keyboardType: keyboardType,
         decoration: InputDecoration(
           labelText: label,
+          hintText: hintText,
           prefixIcon: Icon(icon, size: 20),
           border: const OutlineInputBorder(),
           isDense: true,
@@ -1542,6 +1709,21 @@ class _AttachmentDraft {
   final String filePath;
   final String? thumbnailPath;
   final FileType fileType;
+}
+
+/// A medicine entry with name and dosage controllers.
+class _MedicineEntry {
+  _MedicineEntry({String name = '', String dosage = ''})
+      : nameController = TextEditingController(text: name),
+        dosageController = TextEditingController(text: dosage);
+
+  final TextEditingController nameController;
+  final TextEditingController dosageController;
+
+  void dispose() {
+    nameController.dispose();
+    dosageController.dispose();
+  }
 }
 
 class _TagPickerSheet extends StatefulWidget {

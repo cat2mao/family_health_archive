@@ -24,7 +24,7 @@ class EmptyTimeline extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             Text(
-              '点击右下角「添加就诊」记录第一次就诊\n长按顶部头像可编辑人员档案',
+              '点击右下角「添加就诊」记录第一次就诊\n点击左上角头像切换家庭成员',
               textAlign: TextAlign.center,
               style: theme.textTheme.bodyMedium?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,

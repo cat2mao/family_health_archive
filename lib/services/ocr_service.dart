@@ -25,6 +25,7 @@ class OcrExtractedData {
   String? cost;
   String? date;
   String? medicineName;
+  String? medicineUsage; // 用法用量
   String? result;
   String? treatment;
   String? rawText;
@@ -38,6 +39,7 @@ class OcrExtractedData {
     this.cost,
     this.date,
     this.medicineName,
+    this.medicineUsage,
     this.result,
     this.treatment,
     this.rawText,
@@ -52,6 +54,7 @@ class OcrExtractedData {
       cost != null ||
       date != null ||
       medicineName != null ||
+      medicineUsage != null ||
       result != null ||
       treatment != null;
 
@@ -79,6 +82,7 @@ class OcrExtractedData {
     if (cost != null) fields['费用'] = '¥$cost';
     if (date != null) fields['日期'] = date!;
     if (medicineName != null) fields['药品'] = medicineName!;
+    if (medicineUsage != null) fields['用法用量'] = medicineUsage!;
     if (result != null) fields['结果'] = result!;
     if (treatment != null) fields['处置'] = treatment!;
     return fields;
@@ -87,8 +91,8 @@ class OcrExtractedData {
   @override
   String toString() {
     return 'OcrExtractedData(hospital=$hospital, diagnosis=$diagnosis, doctor=$doctorName, '
-        'symptoms=$symptoms, cost=$cost, date=$date, medicine=$medicineName, result=$result, treatment=$treatment, '
-        'type=$documentTypeName)';
+        'symptoms=$symptoms, cost=$cost, date=$date, medicine=$medicineName, usage=$medicineUsage, '
+        'result=$result, treatment=$treatment, type=$documentTypeName)';
   }
 }
 
@@ -464,15 +468,93 @@ class OcrService {
       }
     }
 
-    // --- Medicine name detection ---
-    final medicineKeywords = ['处方', '药品', '用药', '药物', '品名', '药品名称'];
-    for (final keyword in medicineKeywords) {
-      final pattern = RegExp('$keyword[：:\s]*([一-龥A-Za-z0-9\s]+)');
-      final match = pattern.firstMatch(fullText);
-      if (match != null) {
+    // --- Medicine name detection (improved: multiple medicines with specs) ---
+    final List<String> medicines = [];
+    String? medicineUsage;
+
+    // Pattern 1: Look for prescription section with numbered medicines
+    final prescriptionSectionPattern = RegExp(r'(?:处方|药品|用药|Rp)[：:\s]*([\s\S]*?)(?=(?:诊断|处置|医嘱|签名|盖章|$))');
+    final prescriptionMatch = prescriptionSectionPattern.firstMatch(fullText);
+    if (prescriptionMatch != null) {
+      final prescriptionText = prescriptionMatch.group(1) ?? '';
+      // Split by numbered items or newlines
+      final medicineLines = prescriptionText.split(RegExp(r'[\n\r]+'));
+      for (final line in medicineLines) {
+        final trimmed = line.trim();
+        if (trimmed.isEmpty) continue;
+        // Match medicine with optional spec: "药品名 规格 用法"
+        final medPattern = RegExp(r'(?:\d+[.、)）]\s*)?([一-龥A-Za-z][一-龥A-Za-z0-9\s()（）]*(?:片|胶囊|颗粒|口服液|滴剂|软膏|乳膏|凝胶|喷雾剂|气雾剂|注射液|糖浆|混悬液|散|丸|膏|贴|栓)?)[\s,，]*([0-9]+(?:mg|g|ml|μg|ug|片|粒|支|袋|瓶|盒)?(?:\s*[×xX*]\s*[0-9]+(?:片|粒|支|袋|瓶|盒))?)?[\s,，]*((?:口服|外用|静滴|注射|滴注|含服|喷入|涂抹|外敷|每日\d+次|每次\d+(?:片|粒|支|袋|ml|g)?|(?:一日|每天)\d+次|(?:一次|每次)\d+(?:片|粒|支|袋|ml|g)?)[\s,，]*(?:\d+(?:天|日|周))?)?');
+        final medMatch = medPattern.firstMatch(trimmed);
+        if (medMatch != null) {
+          final name = medMatch.group(1)?.trim();
+          final spec = medMatch.group(2)?.trim();
+          final usage = medMatch.group(3)?.trim();
+          if (name != null && name.length >= 2) {
+            String medicine = name;
+            if (spec != null && spec.isNotEmpty) {
+              medicine += ' $spec';
+            }
+            medicines.add(medicine);
+            if (usage != null && usage.isNotEmpty) {
+              if (medicineUsage == null) {
+                medicineUsage = usage;
+              } else {
+                medicineUsage += '\n$usage';
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Pattern 2: If no medicines found, try simpler patterns
+    if (medicines.isEmpty) {
+      final medicineKeywords = ['处方', '药品', '用药', '药物', '品名', '药品名称'];
+      for (final keyword in medicineKeywords) {
+        final pattern = RegExp('$keyword[：:\s]*([一-龥A-Za-z0-9\s]+)');
+        final match = pattern.firstMatch(fullText);
+        if (match != null) {
+          final name = match.group(1)?.trim();
+          if (name != null && name.length >= 2) {
+            medicines.add(name.length > 30 ? name.substring(0, 30) : name);
+            break;
+          }
+        }
+      }
+    }
+
+    // Pattern 3: Look for common medicine patterns in the text
+    if (medicines.isEmpty) {
+      final commonMedPattern = RegExp(r'([一-龥]{2,10}(?:片|胶囊|颗粒|口服液|滴剂|糖浆|软膏|乳膏|凝胶|喷雾剂|注射液))[\s,，]*([0-9]+(?:mg|g|ml|μg|ug)?(?:\s*[×xX*]\s*[0-9]+(?:片|粒|支|袋|盒))?)?');
+      final medMatches = commonMedPattern.allMatches(fullText);
+      for (final match in medMatches) {
         final name = match.group(1)?.trim();
+        final spec = match.group(2)?.trim();
         if (name != null && name.length >= 2) {
-          medicineName = name.length > 30 ? name.substring(0, 30) : name;
+          String medicine = name;
+          if (spec != null && spec.isNotEmpty) {
+            medicine += ' $spec';
+          }
+          medicines.add(medicine);
+        }
+      }
+    }
+
+    // Combine medicines with newlines
+    if (medicines.isNotEmpty) {
+      medicineName = medicines.join('\n');
+    }
+
+    // Detect usage/dosage if not found with medicines
+    if (medicineUsage == null) {
+      final usagePatterns = [
+        RegExp(r'(?:用法|用量|服用方法|使用方法)[：:\s]*([一-龥A-Za-z0-9\s,，、]+?)(?=(?:诊断|处置|医嘱|$))'),
+        RegExp(r'(?:口服|外用|静滴|注射|滴注|含服)[，,\s]*(?:每次|一次)\s*([0-9]+\s*(?:片|粒|支|袋|ml|g)[，,\s]*(?:一日|每天|每日)\s*[0-9]+\s*次(?:[，,\s]*连服\s*[0-9]+\s*(?:天|日|周))?)'),
+      ];
+      for (final pattern in usagePatterns) {
+        final match = pattern.firstMatch(fullText);
+        if (match != null) {
+          medicineUsage = match.group(0)?.trim();
           break;
         }
       }
@@ -522,6 +604,7 @@ class OcrService {
       cost: cost,
       date: date,
       medicineName: medicineName,
+      medicineUsage: medicineUsage,
       result: result,
       treatment: treatment,
       rawText: rawText,

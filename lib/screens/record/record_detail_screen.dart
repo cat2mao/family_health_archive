@@ -1,6 +1,8 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
@@ -61,64 +63,67 @@ class _RecordDetailScreenState extends ConsumerState<RecordDetailScreen> {
             padding: const EdgeInsets.all(16),
             children: [
               // Header card
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Icon(Icons.calendar_today, size: 20, color: theme.colorScheme.primary),
-                          const SizedBox(width: 8),
-                          Text(
-                            _dateFmt.format(record.visitTime),
-                            style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
-                          ),
-                          const Spacer(),
-                          Chip(
-                            label: Text(record.recordVisitType.label),
-                            backgroundColor: _visitTypeColor(record.recordVisitType).withValues(alpha: 0.15),
-                          ),
-                        ],
-                      ),
-                      if (record.hospital.isNotEmpty) ...[
-                        const SizedBox(height: 12),
+              _buildCopyableCard(
+                copyText: _buildHeaderCopyText(record),
+                child: Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
                         Row(
                           children: [
-                            Icon(Icons.local_hospital, size: 18, color: theme.colorScheme.primary),
-                            const SizedBox(width: 8),
-                            Text(record.hospital, style: theme.textTheme.bodyLarge),
-                          ],
-                        ),
-                      ],
-                      if (record.location.isNotEmpty) ...[
-                        const SizedBox(height: 4),
-                        Row(
-                          children: [
-                            Icon(Icons.meeting_room, size: 18, color: theme.colorScheme.onSurfaceVariant),
-                            const SizedBox(width: 8),
-                            Text(record.location, style: theme.textTheme.bodyMedium),
-                          ],
-                        ),
-                      ],
-                      if (record.cost != null) ...[
-                        const SizedBox(height: 8),
-                        Row(
-                          children: [
-                            Icon(Icons.payments, size: 18, color: theme.colorScheme.secondary),
+                            Icon(Icons.calendar_today, size: 20, color: theme.colorScheme.primary),
                             const SizedBox(width: 8),
                             Text(
-                              _moneyFmt.format(record.cost),
-                              style: theme.textTheme.titleSmall?.copyWith(
-                                color: theme.colorScheme.secondary,
-                                fontWeight: FontWeight.w600,
-                              ),
+                              _dateFmt.format(record.visitTime),
+                              style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+                            ),
+                            const Spacer(),
+                            Chip(
+                              label: Text(record.recordVisitType.label),
+                              backgroundColor: _visitTypeColor(record.recordVisitType).withValues(alpha: 0.15),
                             ),
                           ],
                         ),
+                        if (record.hospital.isNotEmpty) ...[
+                          const SizedBox(height: 12),
+                          Row(
+                            children: [
+                              Icon(Icons.local_hospital, size: 18, color: theme.colorScheme.primary),
+                              const SizedBox(width: 8),
+                              Text(record.hospital, style: theme.textTheme.bodyLarge),
+                            ],
+                          ),
+                        ],
+                        if (record.location.isNotEmpty) ...[
+                          const SizedBox(height: 4),
+                          Row(
+                            children: [
+                              Icon(Icons.meeting_room, size: 18, color: theme.colorScheme.onSurfaceVariant),
+                              const SizedBox(width: 8),
+                              Text(record.location, style: theme.textTheme.bodyMedium),
+                            ],
+                          ),
+                        ],
+                        if (record.cost != null) ...[
+                          const SizedBox(height: 8),
+                          Row(
+                            children: [
+                              Icon(Icons.payments, size: 18, color: theme.colorScheme.secondary),
+                              const SizedBox(width: 8),
+                              Text(
+                                _moneyFmt.format(record.cost),
+                                style: theme.textTheme.titleSmall?.copyWith(
+                                  color: theme.colorScheme.secondary,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
                       ],
-                    ],
+                    ),
                   ),
                 ),
               ),
@@ -134,34 +139,46 @@ class _RecordDetailScreenState extends ConsumerState<RecordDetailScreen> {
 
               // Treatment
               if (record.treatment != null && record.treatment!.isNotEmpty)
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('处置', style: theme.textTheme.titleSmall),
-                        const SizedBox(height: 8),
-                        Text(record.treatment!, style: theme.textTheme.bodyMedium),
-                      ],
+                _buildCopyableCard(
+                  copyText: '处置: ${record.treatment!}',
+                  child: Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('处置', style: theme.textTheme.titleSmall),
+                          const SizedBox(height: 8),
+                          Text(record.treatment!, style: theme.textTheme.bodyMedium),
+                        ],
+                      ),
                     ),
                   ),
                 ),
               if (record.treatment != null && record.treatment!.isNotEmpty)
                 const SizedBox(height: 12),
 
+              // Medicine (prescription)
+              if (record.medicine != null && record.medicine!.isNotEmpty)
+                _buildMedicineCard(context, record.medicine!),
+              if (record.medicine != null && record.medicine!.isNotEmpty)
+                const SizedBox(height: 12),
+
               // Notes
               if (record.notes != null && record.notes!.isNotEmpty)
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('备注', style: theme.textTheme.titleSmall),
-                        const SizedBox(height: 8),
-                        Text(record.notes!, style: theme.textTheme.bodyMedium),
-                      ],
+                _buildCopyableCard(
+                  copyText: '备注: ${record.notes!}',
+                  child: Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('备注', style: theme.textTheme.titleSmall),
+                          const SizedBox(height: 8),
+                          Text(record.notes!, style: theme.textTheme.bodyMedium),
+                        ],
+                      ),
                     ),
                   ),
                 ),
@@ -266,17 +283,144 @@ class _RecordDetailScreenState extends ConsumerState<RecordDetailScreen> {
   }
 
   Widget _infoRow(String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: 80,
-            child: Text(label, style: const TextStyle(color: Colors.grey)),
+    return GestureDetector(
+      onLongPress: () => _copyToClipboard('$label: $value'),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              width: 80,
+              child: Text(label, style: const TextStyle(color: Colors.grey)),
+            ),
+            Expanded(child: Text(value)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _copyToClipboard(String text) {
+    Clipboard.setData(ClipboardData(text: text));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('已复制到剪贴板'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
+
+  String _buildHeaderCopyText(MedicalRecordRow record) {
+    final parts = <String>[];
+    parts.add('日期: ${_dateFmt.format(record.visitTime)}');
+    parts.add('类型: ${record.recordVisitType.label}');
+    if (record.hospital.isNotEmpty) parts.add('医院: ${record.hospital}');
+    if (record.location.isNotEmpty) parts.add('科室: ${record.location}');
+    if (record.cost != null) parts.add('费用: ${_moneyFmt.format(record.cost)}');
+    return parts.join('\n');
+  }
+
+  /// Build a copyable card that copies all content on long press
+  Widget _buildCopyableCard({required Widget child, required String copyText}) {
+    return GestureDetector(
+      onLongPress: () => _copyToClipboard(copyText),
+      child: child,
+    );
+  }
+
+  /// Parse medicine string into a list of (name, dosage) pairs.
+  /// Supports both legacy newline-separated format and new JSON format.
+  List<Map<String, String>> _parseMedicines(String medicine) {
+    final trimmed = medicine.trim();
+    // Try JSON format first
+    if (trimmed.startsWith('[')) {
+      try {
+        final list = jsonDecode(trimmed) as List<dynamic>;
+        return list.map((e) {
+          final map = e as Map<String, dynamic>;
+          return <String, String>{
+            'name': (map['name'] ?? '').toString(),
+            'dosage': (map['dosage'] ?? '').toString(),
+          };
+        }).toList();
+      } catch (_) {
+        // Fall through to legacy format
+      }
+    }
+    // Legacy format: newline-separated names (possibly with ||| delimiter)
+    return trimmed.split('\n').where((l) => l.trim().isNotEmpty).map((line) {
+      final parts = line.split('|||');
+      return <String, String>{
+        'name': parts[0].trim(),
+        'dosage': parts.length > 1 ? parts[1].trim() : '',
+      };
+    }).toList();
+  }
+
+  Widget _buildMedicineCard(BuildContext context, String medicine) {
+    final theme = Theme.of(context);
+    final medicines = _parseMedicines(medicine);
+    if (medicines.isEmpty) return const SizedBox.shrink();
+
+    // Build copy text for medicines
+    final copyText = medicines.map((m) {
+      final name = m['name'] ?? '';
+      final dosage = m['dosage'] ?? '';
+      return dosage.isNotEmpty ? '$name ($dosage)' : name;
+    }).join('\n');
+
+    return GestureDetector(
+      onLongPress: () => _copyToClipboard('药品:\n$copyText'),
+      child: Card(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(Icons.medication_outlined, size: 18, color: theme.colorScheme.primary),
+                  const SizedBox(width: 8),
+                  Text('药品', style: theme.textTheme.titleSmall),
+                  const Spacer(),
+                  Icon(Icons.copy, size: 14, color: theme.colorScheme.outline),
+                ],
+              ),
+              const SizedBox(height: 8),
+              ...medicines.map((m) {
+                final name = m['name'] ?? '';
+                final dosage = m['dosage'] ?? '';
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(Icons.circle, size: 6, color: theme.colorScheme.primary),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(name, style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w500)),
+                            if (dosage.isNotEmpty)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 2),
+                                child: Text(
+                                  dosage,
+                                  style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              }),
+            ],
           ),
-          Expanded(child: Text(value)),
-        ],
+        ),
       ),
     );
   }
